@@ -1,0 +1,12 @@
+mu1 = [0 0]; mu2 = [1 1]; Sigma = eye(2);
+[X,Y] = meshgrid(-3:0.1:3);
+P1 = mvnpdf([X(:) Y(:)],mu1,Sigma);
+P2 = mvnpdf([X(:) Y(:)],mu2,Sigma);
+P1 = reshape(P1,size(X)); P2 = reshape(P2,size(X));
+
+figure;
+contour(X,Y,P1,[0.02 0.05 0.1],'b');
+hold on; contour(X,Y,P2,[0.02 0.05 0.1],'r');
+fplot(@(x) 1-x,[-3 3],'k','LineWidth',1.5);
+title('Decision Boundary: x_1 + x_2 = 1');
+legend('Class 1','Class 2','Boundary');
