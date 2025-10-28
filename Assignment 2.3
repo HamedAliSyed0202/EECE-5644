@@ -1,0 +1,37 @@
+%% Question 3 - MAP Localization
+clear; clc; close all
+
+xT = [0.3; -0.4];        % true position
+sigma = 0.3;             % range noise std
+sx = 0.25; sy = 0.25;    % prior stds
+
+for K = 1:4
+    theta = linspace(0, 2*pi, K+1); 
+    theta(end) = [];  % remove overlap point
+    landmarks = [cos(theta(:)) sin(theta(:))];  % Kx2 matrix
+
+    % Generate noisy range measurements
+    r = sqrt(sum((xT' - landmarks).^2, 2)) + sigma*randn(K,1);
+
+    % Create grid for MAP evaluation
+    [X, Y] = meshgrid(linspace(-2,2,200));
+    J = zeros(size(X));
+
+    % Evaluate cost function
+    for i = 1:K
+        d = sqrt((X - landmarks(i,1)).^2 + (Y - landmarks(i,2)).^2);
+        J = J + (r(i) - d).^2 / (2*sigma^2);
+    end
+
+    % Add prior term
+    J = J + (X.^2/(2*sx^2) + Y.^2/(2*sy^2));
+
+    % Plot contours
+    subplot(2,2,K);
+    contour(X, Y, J, 30);
+    hold on;
+    plot(landmarks(:,1), landmarks(:,2), 'ro', 'MarkerFaceColor','r');
+    plot(xT(1), xT(2), 'b+', 'MarkerSize',10, 'LineWidth',1.5);
+    title(['K = ', num2str(K)]);
+    axis equal;
+end
