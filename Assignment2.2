@@ -1,0 +1,26 @@
+%% Question 2 - ML and MAP Estimation
+clear; clc; close all
+
+N = 50;
+x = linspace(-2,2,N)';
+y_true = 0.5*x.^3 - 0.3*x.^2 + 2*x + 1;
+y = y_true + 0.3*randn(N,1);
+Phi = [ones(N,1), x, x.^2, x.^3];
+
+% ML Estimator
+w_ML = (Phi'*Phi)\(Phi'*y);
+
+% MAP Estimator
+sigma2 = var(y - Phi*w_ML);
+gamma = logspace(-3,3,10);
+MSE = zeros(size(gamma));
+
+for i=1:length(gamma)
+    w_MAP = (Phi'*Phi + sigma2/gamma(i)*eye(size(Phi,2)))\(Phi'*y);
+    y_hat = Phi*w_MAP;
+    MSE(i) = mean((y - y_hat).^2);
+end
+
+figure; semilogx(gamma,MSE,'LineWidth',2);
+xlabel('\gamma'); ylabel('Validation MSE');
+title('MSE vs Regularization Parameter'); grid on;
