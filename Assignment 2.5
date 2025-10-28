@@ -1,0 +1,5 @@
+n = [20 30 50]; N = sum(n); alpha = [2 2 2];
+theta_ML = n/N;
+theta_MAP = (n + alpha - 1)/(N + sum(alpha - 1));
+disp('ML Estimator:'), disp(theta_ML)
+disp('MAP Estimator:'), disp(theta_MAP)
