@@ -1,0 +1,80 @@
+%% Question 1 - Bayes Optimal Classifier
+clear; clc; close all
+
+% Class priors
+P0 = 0.6; P1 = 0.4;
+
+% Mean vectors
+m01 = [-0.9; -1.1]; m02 = [0.8; 0.75];
+m11 = [-1.1; 0.9];  m12 = [0.9; -0.75];
+C = [0.75 0; 0 1.25];
+
+% Generate validation dataset
+[X_val, L_val] = generate_data(10000, P0, P1, m01, m02, m11, m12, C);
+
+% Compute class-conditional densities
+p0 = 0.5*mvnpdf(X_val,m01',C) + 0.5*mvnpdf(X_val,m02',C);
+p1 = 0.5*mvnpdf(X_val,m11',C) + 0.5*mvnpdf(X_val,m12',C);
+
+% Discriminant function and classification
+g = log(P1*p1 ./ (P0*p0));
+L_pred = g > 0;
+
+% Probability of error
+P_error = mean(L_pred' ~= L_val);
+
+% ROC curve
+[TPR,FPR,~,~] = perfcurve(L_val,g,1);
+figure; plot(FPR,TPR,'LineWidth',2);
+xlabel('False Positive Rate'); ylabel('True Positive Rate');
+title(['ROC Curve, P_{error} = ', num2str(P_error)]);
+grid on;
+
+% Compute the minimum-P(error) point
+P_error = mean(L_pred' ~= L_val); % existing error estimate (keep it)
+
+% Find index of the point closest to the "ideal" top-left corner (min distance)
+[~, idx_min] = min((1 - TPR).^2 + FPR.^2);
+
+% Plot ROC curve
+figure;
+plot(FPR, TPR, 'b-', 'LineWidth', 2); hold on;
+
+% Mark the min-P(error) point
+plot(FPR(idx_min), TPR(idx_min), 'ro', 'MarkerFaceColor','r', 'MarkerSize', 8);
+
+% Annotate
+text(FPR(idx_min)+0.02, TPR(idx_min), sprintf('Min P_{err} ≈ %.3f', P_error), ...
+    'FontSize',10,'Color','r','FontWeight','bold');
+
+xlabel('False Positive Rate');
+ylabel('True Positive Rate');
+title(sprintf('ROC Curve with Min P_{error} Marker (AUC = %.3f)', AUC));
+grid on;
+
+%% Logistic Regression Training Function
+function w = logistic_train(X, y)
+    X = [ones(size(X,1),1), X];
+    w = zeros(size(X,2),1);
+    eta = 0.05; % learning rate
+    for epoch=1:500
+        y_pred = 1./(1+exp(-X*w));
+        grad = X'*(y_pred - y);
+        w = w - eta*grad;
+    end
+end
+
+%% Data Generation Function
+function [X, L] = generate_data(N, P0, P1, m01, m02, m11, m12, C)
+    X = zeros(N,2); L = zeros(N,1);
+    for n=1:N
+        if rand < P0
+            L(n)=0;
+            if rand < 0.5; mu=m01; else; mu=m02; end
+        else
+            L(n)=1;
+            if rand < 0.5; mu=m11; else; mu=m12; end
+        end
+        X(n,:) = mvnrnd(mu,C);
+    end
+end
