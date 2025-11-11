@@ -1,0 +1,223 @@
+%% EECE5644 A3 – Q2:
+clear; close all; clc; rng(42);
+
+% ------------ User controls ------------
+Ns        = [10, 100, 1000, 10000];   % dataset sizes
+Kfold     = 10;                       % 10-fold CV
+candK     = 1:10;                     % model orders
+restarts  = 3;                        % EM restarts
+delta     = 1e-6; maxIter = 300;
+reg       = 1e-5;                     % ridge regularization
+R         = 10;                       % repeats for histogram
+
+% ------------ True 2-D GMM parameters ------------
+alphaT = [0.35 0.25 0.25 0.15];
+muT = [0 3 5.5 0; 0 3 3.2 6];
+SigmaT(:,:,1) = [0.8  0.2;  0.2 0.6];
+SigmaT(:,:,2) = [1.0  0.3;  0.3 0.9];
+SigmaT(:,:,3) = [1.1  0.4;  0.4 1.0];
+SigmaT(:,:,4) = [0.7 -0.2; -0.2 0.8];
+
+% ------------ Main loop over N ------------
+for Ni = 1:numel(Ns)
+    N = Ns(Ni);
+
+    % (1) Sample and plot
+    [X,~] = sampleGMMtrue(N,alphaT,muT,SigmaT,reg);
+    figure('Name',sprintf('Samples N=%d',N));
+    scatter(X(1,:),X(2,:),15,'b','filled');
+    title(sprintf('True 4-comp GMM Samples (N=%d)',N));
+    xlabel('x_1'); ylabel('x_2'); axis equal; grid on;
+
+    % (2) Cross-validation curve
+    folds = makeFolds(N,Kfold);
+    avgLL = zeros(size(candK));
+    for k = 1:numel(candK)
+        M = candK(k);
+        llFold = zeros(1,Kfold);
+        for f = 1:Kfold
+            val = folds{f,2}; tr = folds{f,1};
+            Xtr = X(:,tr); Xval = X(:,val);
+            bestLL = -inf;
+            for r = 1:restarts
+                model = EMforGMM(Xtr,M,delta,maxIter,reg);
+                ll = meanLogLik(model,Xtr,reg);
+                if ll > bestLL, bestLL = ll; bestM = model; end 
+            end
+            llFold(f) = meanLogLik(bestM,Xval,reg);
+        end
+        avgLL(k) = mean(llFold);
+    end
+    [~,ix] = max(avgLL); bestK = candK(ix);
+    figure('Name',sprintf('CV Curve N=%d',N));
+    plot(candK,avgLL,'o-','LineWidth',1.5);
+    grid on; xlabel('Model order K'); ylabel('Mean validation log-likelihood');
+    title(sprintf('10-fold CV (N=%d) → best K=%d',N,bestK));
+
+    % (3) Repeat CV for histogram
+    bestKs = zeros(1,R);
+    for r = 1:R
+        [Xr,~] = sampleGMMtrue(N,alphaT,muT,SigmaT,reg);
+        folds = makeFolds(N,Kfold);
+        avgLLr = zeros(size(candK));
+        for k = 1:numel(candK)
+            M = candK(k);
+            llFold = zeros(1,Kfold);
+            for f = 1:Kfold
+                val = folds{f,2}; tr = folds{f,1};
+                Xtr = Xr(:,tr); Xval = Xr(:,val);
+                bestLL = -inf;
+                for rr = 1:restarts
+                    model = EMforGMM(Xtr,M,delta,maxIter,reg);
+                    ll = meanLogLik(model,Xtr,reg);
+                    if ll > bestLL, bestLL = ll; bestM = model; end 
+                end
+                llFold(f) = meanLogLik(bestM,Xval,reg);
+            end
+            avgLLr(k) = mean(llFold);
+        end
+        [~,ix] = max(avgLLr);
+        bestKs(r) = candK(ix);
+    end
+    figure('Name',sprintf('Selection Histogram N=%d',N));
+    histogram(bestKs,'BinMethod','integers'); 
+    xticks(candK);
+    xlabel('Selected K'); ylabel('Frequency');
+    title(sprintf('Selection Frequency (N=%d, R=%d)',N,R));
+    grid on;
+end
+
+%% ==============================================================
+%% ====================  Helper Functions =======================
+%% ==============================================================
+
+function [X,labels] = sampleGMMtrue(N,alpha,mu,Sigma,reg)
+d = size(mu,1); 
+C = numel(alpha);
+cum = [0 cumsum(alpha)];
+u = rand(1,N);
+X = zeros(d,N); 
+labels = zeros(1,N);
+for c = 1:C
+    idx = (u > cum(c)) & (u <= cum(c+1));
+    if any(idx)
+        S = makePD(Sigma(:,:,c), reg);
+        X(:,idx) = randGaussian(sum(idx), mu(:,c), S);
+        labels(idx) = c;
+    end
+end
+end
+
+function X = randGaussian(N, mu, Sigma)
+d = numel(mu);
+S = makePD(Sigma,1e-8);
+R = chol(S,'lower');
+X = R * randn(d, N) + mu;
+end
+
+function S = makePD(S, eps0)
+S = (S + S')/2;
+ridge = eps0;
+for t = 1:8
+    [~,p] = chol(S);
+    if p==0, return; end
+    S = S + ridge*eye(size(S));
+    ridge = ridge * 10;
+end
+S = S + 1e-2 * eye(size(S));
+end
+
+function idx = makeFolds(N, K)
+perm = randperm(N);
+edges = round(linspace(0, N, K+1));
+idx = cell(K,2);
+for k = 1:K
+    val = perm(edges(k)+1 : edges(k+1));
+    trn = setdiff(perm, val);
+    idx{k,1} = trn; 
+    idx{k,2} = val;
+end
+end
+
+function model = EMforGMM(X, M, delta, maxIter, reg)
+[d,N] = size(X);
+
+% handle case when training samples < M
+nAvail = min(M, N);
+perm = randperm(N);
+mu = X(:, perm(1:nAvail));
+if nAvail < M
+    extra = repmat(mu(:,1), 1, M - nAvail);
+    mu = [mu, extra];
+end
+
+alpha = ones(1,M)/M;
+Sigma = repmat(eye(d),1,1,M);
+prevLL = -inf;
+
+for it = 1:maxIter
+    % ----- E-step -----
+    logC = zeros(M,N);
+    for m = 1:M
+        S = makePD(Sigma(:,:,m),reg);
+        logC(m,:) = log(alpha(m)) + logmvnpdf(X,mu(:,m),S,reg);
+    end
+    [logsum,resp] = logNormExp(logC);
+    ll = mean(logsum);
+
+    % ----- M-step -----
+    Nk = sum(resp,2)'; 
+    alpha = Nk / N;
+    mu = (X * resp') ./ Nk;
+    for m = 1:M
+        Xm = X - mu(:,m);
+        S = (Xm .* resp(m,:)) * Xm' ./ Nk(m);
+        Sigma(:,:,m) = makePD(S + reg*eye(d), reg);
+    end
+
+    % ----- Convergence -----
+    if ll - prevLL < delta, break; end
+    prevLL = ll;
+end
+
+model.alpha = alpha; 
+model.mu = mu; 
+model.Sigma = Sigma;
+end
+
+function [logsum,resp] = logNormExp(logC)
+amax = max(logC,[],1);
+logsum = amax + log(sum(exp(logC - amax),1));
+resp = exp(logC - logsum);
+end
+
+function ll = meanLogLik(model, X, reg)
+M = numel(model.alpha); 
+N = size(X,2);
+logC = zeros(M,N);
+for m = 1:M
+    S = makePD(model.Sigma(:,:,m),reg);
+    logC(m,:) = log(model.alpha(m)) + logmvnpdf(X,model.mu(:,m),S,reg);
+end
+ll = mean(logsumexp(logC,1));
+end
+
+function y = logmvnpdf(X, mu, S, reg)
+% Log multivariate Gaussian using eig (never fails)
+d = numel(mu);
+S = (S + S')/2 + reg*eye(d);
+[V,D] = eig(S);
+D = diag(D);
+D(D < 1e-10) = 1e-10;
+invS = V * diag(1./D) * V';
+logdetS = sum(log(D));
+Xc = X - mu;
+q = sum((Xc' * invS) .* Xc', 2)';
+y = -0.5 * (d*log(2*pi) + logdetS + q);
+end
+
+function y = logsumexp(a, dim)
+if nargin<2, dim=1; end
+amax = max(a,[],dim);
+y = amax + log(sum(exp(a - amax), dim));
+end
