@@ -1,6 +1,5 @@
-%% EECE 5644 – Assignment 3 – Q1 (Final, Toolbox-light version)
+%% EECE 5644 – Assignment 3 – Q1 
 % MLP posterior approximation vs True MAP baseline
-% Requires Deep Learning Toolbox for 'patternnet' ONLY.
 clear; close all; clc; rng(42);
 
 % ---------- Check for Deep Learning Toolbox ----------
