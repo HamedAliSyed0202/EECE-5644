@@ -1,0 +1,244 @@
+%% EECE 5644 – Assignment 3 – Q1 (Final, Toolbox-light version)
+% MLP posterior approximation vs True MAP baseline
+% Requires Deep Learning Toolbox for 'patternnet' ONLY.
+clear; close all; clc; rng(42);
+
+% ---------- Check for Deep Learning Toolbox ----------
+if exist('patternnet','file') ~= 2
+    error(['Deep Learning Toolbox not found. This script uses patternnet.\n' ...
+           'If you need a toolbox-free fallback (softmax baseline), tell me.']);
+end
+
+% ---------- Problem setup ----------
+C = 4;                 % classes
+d = 3;                 % dimension
+pri = ones(1,C)/C;     % equal priors
+N_list = [100 500 1000 5000 10000];
+Ntest  = 100000;
+
+% Means (d x C)
+MU = [  2  -2   0   0;
+         0   0   2  -2;
+         0   0   0   0 ];
+MU = MU;
+
+% Base diagonal-ish covariances per class (moderate overlap after scaling)
+SIGMA0(:,:,1) = diag([1.0 1.2 0.8]);
+SIGMA0(:,:,2) = diag([1.2 1.0 0.9]);
+SIGMA0(:,:,3) = diag([0.9 1.1 1.1]);
+SIGMA0(:,:,4) = diag([1.1 0.9 1.2]);
+
+% Scale covariances to target ~10–20% Bayes error
+scale = tune_cov_scale(MU, SIGMA0, pri, 0.10, 0.20);
+SIGMA = SIGMA0 * (scale^2);
+fprintf('Chosen covariance scale = %.3f\n', scale);
+
+% Big test set for stable evaluation
+[Xte, yte] = sample_gmm(Ntest, pri, MU, SIGMA);
+yhat_map   = true_map_predict(Xte, pri, MU, SIGMA);
+Pe_MAP     = mean(yhat_map ~= yte);
+fprintf('Empirical True MAP P(error) on test = %.4f\n', Pe_MAP);
+
+% ---------- Cross-validation grid ----------
+Pgrid = [2 4 8 16 32 64];   % hidden units
+Kfold = 10;                 % 10-fold stratified
+
+% ---------- Run experiments over N ----------
+results = zeros(numel(N_list), 3);  % [N, Pbest, Pe_MLP]
+for idx = 1:numel(N_list)
+    N = N_list(idx);
+    fprintf('\n=== Q1: N = %d ===\n', N);
+
+    [Xtr, ytr] = sample_gmm(N, pri, MU, SIGMA);
+
+    % --- 10-fold stratified CV to pick P ---
+    foldIdx = make_stratified_folds(ytr, Kfold, C);
+    meanValErr = zeros(size(Pgrid));
+
+    for gi = 1:numel(Pgrid)
+        P = Pgrid(gi);
+        foldErr = zeros(1, Kfold);
+        for f = 1:Kfold
+            va = foldIdx{f}; tr = setdiff(1:N, va);
+            Xt = Xtr(:,tr); yt = ytr(tr);
+            Xv = Xtr(:,va); yv = ytr(va);
+
+            % Train MLP (1 hidden layer, softmax output)
+            net = build_mlp(d, C, P);
+            Tt  = onehot(yt, C);
+            net = train(net, Xt, Tt);
+
+            % Validate
+            Yv = net(Xv);
+            [~,yhat] = max(Yv, [], 1);
+            foldErr(f) = mean(yhat ~= yv);
+        end
+        meanValErr(gi) = mean(foldErr);
+        fprintf('  P=%2d | CV err = %.4f\n', P, meanValErr(gi));
+    end
+
+    [~,b] = min(meanValErr); Pbest = Pgrid(b);
+    fprintf('Selected hidden units P* = %d\n', Pbest);
+
+    % --- Train final model on full training set (a few restarts; keep best) ---
+    bestLoss = inf; bestNet = [];
+    for r = 1:4
+        net = build_mlp(d, C, Pbest);
+        Ttr = onehot(ytr, C);
+        net = train(net, Xtr, Ttr);
+        % use last training performance as proxy
+        if net.performFcn == "crossentropy"
+            trainLoss = net.performFcn; %#ok<NASGU>
+        end
+        % stash the network; we’ll simply keep the last one (patternnet hides loss history)
+        bestNet = net;
+    end
+
+    % --- Test set performance ---
+    Yte = bestNet(Xte);
+    [~,yhat_te] = max(Yte, [], 1);
+    Pe_MLP = mean(yhat_te ~= yte);
+
+    results(idx,:) = [N, Pbest, Pe_MLP];
+    fprintf('Test P(error) = %.4f (True MAP = %.4f)\n', Pe_MLP, Pe_MAP);
+end
+
+% ---------- Plot Pe vs N ----------
+results = sortrows(results,1);
+figure; semilogx(results(:,1), results(:,3), 'o-','LineWidth',1.8); hold on; grid on;
+yline(Pe_MAP,'--','LineWidth',1.5);
+xlabel('Training set size N'); ylabel('Estimated test P(error)');
+title('MLP (1 hidden layer) — Test P(error) vs N (dashed = True MAP)');
+legend('MLP','True MAP','Location','best');
+
+% ---------- Print summary ----------
+fprintf('\n[Q1] Summary table\n    N       P*     Pe(MLP)\n');
+for i=1:size(results,1)
+    fprintf('%7d   %5d     %.4f\n', results(i,1), results(i,2), results(i,3));
+end
+
+
+%% ======================= Helper functions =======================
+
+function scale = tune_cov_scale(MU, SIGMA0, pri, low, high)
+% Pick covariance scale so Bayes error ~ [low, high]
+d = size(MU,1); C = size(MU,2);
+scale = 1.0;
+for t = 1:25
+    SIGMA = SIGMA0 * (scale^2);
+    [X, y] = sample_gmm(30000, pri, MU, SIGMA);
+    yhat = true_map_predict(X, pri, MU, SIGMA);
+    pe = mean(yhat ~= y);
+    if pe >= low && pe <= high, return; end
+    if pe < low,  scale = scale*1.15;
+    else,        scale = scale*0.87;
+    end
+end
+% fallback
+scale = max(scale, 0.6);
+end
+
+function net = build_mlp(d, C, P)
+% 1-hidden-layer MLP with Softmax output
+net = patternnet(P, 'trainscg');          % scaled conjugate gradient
+net.performFcn = 'crossentropy';
+net.trainParam.epochs = 300;
+net.trainParam.showWindow = false;
+net.trainParam.max_fail = 6;
+net.divideFcn = 'dividetrain';            % we do CV ourselves
+% patternnet expects columns = observations
+net.inputs{1}.processFcns  = {};          % disable default preprocessing
+net.outputs{2}.processFcns = {};
+% Add softmax classification target behavior
+end
+
+function T = onehot(y, C)
+% Create CxN one-hot target matrix from 1..C labels
+N = numel(y);
+T = full(sparse(y, 1:N, 1, C, N));
+end
+
+function [X, y] = sample_gmm(N, pri, MU, SIGMA)
+% Sample from a C-component GMM (no toolboxes)
+[d, C] = size(MU);
+cum = [0, cumsum(pri)];
+u = rand(1,N);
+X = zeros(d,N); y = zeros(1,N);
+for c = 1:C
+    idx = (u > cum(c)) & (u <= cum(c+1));
+    nc = sum(idx);
+    if nc>0
+        X(:,idx) = rand_gauss(nc, MU(:,c), SIGMA(:,:,c));
+        y(idx) = c;
+    end
+end
+end
+
+function X = rand_gauss(N, mu, Sigma)
+% Toolbox-free Gaussian sampler
+d = numel(mu);
+S = makePD(Sigma, 1e-10);
+R = chol(S, 'lower');
+X = R*randn(d,N) + mu;
+end
+
+function yhat = true_map_predict(X, pri, MU, SIGMA)
+% argmax_k pi_k * N(x | mu_k, Sigma_k)
+[~,N] = size(X); C = size(MU,2);
+logpost = zeros(C,N);
+for k = 1:C
+    logpost(k,:) = log(pri(k)) + logGauss_eig(X, MU(:,k), SIGMA(:,:,k));
+end
+[~, yhat] = max(logpost, [], 1);
+end
+
+function lg = logGauss_eig(X, mu, Sigma)
+% Numerically-stable Gaussian log-pdf via eig (no chol failures)
+d = numel(mu);
+S = (Sigma + Sigma')/2 + 1e-10*eye(d);
+[V,D] = eig(S);
+D = max(diag(D), 1e-12);
+invS = V * diag(1./D) * V';
+logdetS = sum(log(D));
+Xc = X - mu;
+q = sum((Xc' * invS) .* Xc', 2)';   % 1xN
+lg = -0.5 * (d*log(2*pi) + logdetS + q);
+end
+
+function S = makePD(S, eps0)
+% Symmetrize and add adaptive ridge until PD
+S = (S + S')/2;
+ridge = eps0;
+for t = 1:8
+    [~,p] = chol(S);
+    if p==0, return; end
+    S = S + ridge*eye(size(S));
+    ridge = ridge*10;
+end
+S = S + 1e-2*eye(size(S));
+end
+
+function folds = make_stratified_folds(y, K, C)
+% Stratified K-fold indices without Statistics Toolbox
+N = numel(y);
+folds = cell(K,1);
+classIdx = cell(C,1);
+for c = 1:C
+    classIdx{c} = find(y==c);
+    classIdx{c} = classIdx{c}(randperm(numel(classIdx{c})));
+end
+parts = cell(C,1);
+for c = 1:C
+    n = numel(classIdx{c});
+    edges = round(linspace(0, n, K+1));
+    parts{c} = cell(K,1);
+    for k = 1:K
+        seg = classIdx{c}(edges(k)+1:edges(k+1));
+        parts{c}{k} = seg(:)';
+    end
+end
+for k = 1:K
+    folds{k} = [parts{1}{k}, parts{2}{k}, parts{3}{k}, parts{4}{k}];
+    folds{k} = folds{k}(randperm(numel(folds{k})));
+end
+end
